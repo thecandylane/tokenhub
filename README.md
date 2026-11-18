@@ -54,6 +54,13 @@ The title shows today's input+output tokens; the menu lists per-source and per-m
 
 `python3 backfill.py` (add `--dry-run` to preview) imports past usage from local Claude Code, omp and Grok Build logs. The menu bar plugin shows Claude Code's own all-time figure from `~/.claude/stats-cache.json` next to the unique-request count.
 
+## Stats
+
+`python3 stats.py [all|30d|7d]` prints a Claude Code /stats-style report over every source: activity heatmap, favorite model, sessions, longest session, active days, streaks, most active day, token split, per-model share, and cost. The menu bar plugin shows the same under All time, Last 30 days and Last 7 days.
+
+- Sessions, active days, longest session and busiest day use Claude Code's own `~/.claude/stats-cache.json` for Claude Code history, so they match its Stats tab. Everything else comes from the hub's DB.
+- Cost = what OpenRouter and Grok report, plus a list-price estimate for Anthropic models (`prices.py`, from Anthropic's pricing page). On a subscription that estimate is API-equivalent value, not what you pay. Run `python3 backfill.py --rebuild` after changing prices.
+
 ## Sharing
 
 Each person runs their own hub; nothing leaves your machine and no keys are stored. macOS and Python 3.9+, stdlib only.

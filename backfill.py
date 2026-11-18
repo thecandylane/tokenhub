@@ -3,7 +3,8 @@ Claude Code (~/.claude/projects/**/*.jsonl), omp (~/.omp/agent/sessions) and Gro
 
 Claude: one row per unique requestId (resumed sessions replay old lines, so raw sums overcount).
 Nothing newer than the first live hub row is imported, so live traffic is never counted twice.
-Safe to rerun: rows already imported are skipped. Usage: python3 backfill.py [--dry-run]"""
+Safe to rerun: rows already imported are skipped; --rebuild deletes all imported rows first (use after pricing or logic changes).
+Usage: python3 backfill.py [--dry-run] [--rebuild]"""
 import glob
 import json
 import os
@@ -11,6 +12,7 @@ import sqlite3
 import sys
 
 import hub
+from prices import estimate
 
 LOGS = os.path.expanduser("~/.claude/projects/**/*.jsonl")
 OMP = os.path.expanduser("~/.omp/agent/sessions/**/*.jsonl")
@@ -34,6 +36,10 @@ def collect():
             if k and d.get("timestamp"):
                 last[k] = (d["timestamp"], m.get("model"), m["usage"], d.get("sessionId"))
     return last
+
+
+def num_of(d, k):
+    return d[k] if isinstance(d.get(k), (int, float)) else 0
 
 
 def ts_of(s):
@@ -78,6 +84,8 @@ def main():
     last = collect()
     hub.init_db()
     with sqlite3.connect(hub.DB, timeout=10) as c:
+        if "--rebuild" in sys.argv and "--dry-run" not in sys.argv:
+            print("rebuild: deleted", c.execute("DELETE FROM usage WHERE client='backfill'").rowcount, "imported rows")
         have = {r[0] for r in c.execute("SELECT path FROM usage WHERE client='backfill'")}
         live = c.execute("SELECT MIN(ts) FROM usage WHERE client!='backfill'").fetchone()[0] or "9999"
         rows = []
@@ -86,12 +94,16 @@ def main():
                 continue
             num = lambda key: u[key] if isinstance(u.get(key), (int, float)) else 0
             cd = u.get("output_tokens_details") or {}
+            cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+            w1 = min(num_of(cc, "ephemeral_1h_input_tokens"), num("cache_creation_input_tokens"))  # no breakdown means 5m
+            est = estimate(model, num("input_tokens"), num("output_tokens"), num("cache_read_input_tokens"),
+                           num("cache_creation_input_tokens") - w1, w1)
             rows.append((ts_of(ts), "anthropic", model, 200, 1, num("input_tokens"), num("output_tokens"),
                          num("cache_read_input_tokens"), num("cache_creation_input_tokens"),
-                         cd.get("thinking_tokens") or 0, None, "backfill", sess, f"/backfill/{k}", 0))
+                         cd.get("thinking_tokens") or 0, None, "backfill", sess, f"/backfill/{k}", 0, est))
         for k, ts, src, model, sess, i, o, cr, cw, rs, cost in [*omp_rows(), *grok_rows()]:
             if f"/backfill/{k}" not in have and ts < live:
-                rows.append((ts, src, model, 200, 1, i, o, cr, cw, rs, cost, "backfill", sess, f"/backfill/{k}", 0))
+                rows.append((ts, src, model, 200, 1, i, o, cr, cw, rs, cost, "backfill", sess, f"/backfill/{k}", 0, None))
         by = {}
         for r in rows:
             b = by.setdefault(r[1], [0, 0, 0, 0, 0])
@@ -103,7 +115,7 @@ def main():
         print(f"({len(have)} rows already imported)")
         if "--dry-run" not in sys.argv:
             c.executemany("INSERT INTO usage(ts,source,model,status,stream,input,output,cache_read,cache_write,reasoning,"
-                          "cost_usd,client,session,path,ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                          "cost_usd,client,session,path,ms,est_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             print("imported")
 
 

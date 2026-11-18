@@ -204,17 +204,24 @@ def main():
     # accounting edge cases
     ex = lambda src, *objs: hub.extract(src, list(objs))
     assert ex("openrouter", {"model": "m", "usage": {"prompt_tokens": 194, "completion_tokens": 2, "prompt_tokens_details": {
-        "cached_tokens": 0, "cache_write_tokens": 100}}}) == [("m", (94, 2, 0, 100, 0, None))]
+        "cached_tokens": 0, "cache_write_tokens": 100}}}) == [("m", (94, 2, 0, 100, 0, None, None))]
     assert ex("xai", {"model": "g", "usage": {"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 151, "completion_tokens_details": {
-        "reasoning_tokens": 110}, "prompt_tokens_details": {"cached_tokens": 8}}}) == [("g", (24, 119, 8, 0, 110, None))]
+        "reasoning_tokens": 110}, "prompt_tokens_details": {"cached_tokens": 8}}}) == [("g", (24, 119, 8, 0, 110, None, None))]
     assert ex("anthropic", {"type": "message", "model": "A", "usage": {"input_tokens": 1, "output_tokens": 2, "iterations": [
-        {"type": "message", "input_tokens": 1, "output_tokens": 2}]}}) == [("A", (1, 2, 0, 0, 0, None))]  # plain: top-level wins
+        {"type": "message", "input_tokens": 1, "output_tokens": 2}]}}) == [("A", (1, 2, 0, 0, 0, None, None))]  # plain: top-level wins
     assert sorted(ex("anthropic", {"model": "A", "usage": {"input_tokens": 412, "output_tokens": 264, "iterations": [
         {"type": "message", "model": "B", "input_tokens": 535, "output_tokens": 90},
         {"type": "fallback_message", "model": "A", "input_tokens": 412, "output_tokens": 264}]}})) == \
-        [("A", (412, 264, 0, 0, 0, None)), ("B", (535, 90, 0, 0, 0, None))]
+        [("A", (412, 264, 0, 0, 0, None, None)), ("B", (535, 90, 0, 0, 0, None, None))]
     assert ex("anthropic", {"model": "A", "usage": {"input_tokens": 0, "output_tokens": 0, "iterations": [
-        {"type": "compaction", "input_tokens": 144, "output_tokens": 276}]}}) == [("A", (144, 276, 0, 0, 0, None))]
+        {"type": "compaction", "input_tokens": 144, "output_tokens": 276}]}}) == [("A", (144, 276, 0, 0, 0, None, None))]
+
+    # list-price estimate: 1M of each token kind, half the writes on the 1h TTL (Opus 5.5: 4 + 6.5 + 0.2 + 20)
+    (_, u), = ex("anthropic", {"model": "claude-opus-5-5-20260101", "usage": {
+        "input_tokens": 1_000_000, "output_tokens": 1_000_000, "cache_read_input_tokens": 1_000_000,
+        "cache_creation_input_tokens": 1_000_000,
+        "cache_creation": {"ephemeral_1h_input_tokens": 500_000, "ephemeral_5m_input_tokens": 500_000}}})
+    assert abs(u[6] - 30.7) < 1e-9, u
 
     # a credential never reaches disk (main file and WAL)
     for suffix in ("", "-wal"):

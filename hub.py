@@ -15,6 +15,8 @@ import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from prices import estimate
+
 DB = os.environ.get("TOKENHUB_DB", os.path.expanduser("~/.tokenhub/usage.db"))
 # prefix -> (scheme, host, port, upstream path prefix)
 ROUTES = {
@@ -34,7 +36,7 @@ TIMEOUT = 600  # long thinking pauses mean long silences between chunks
 SCHEMA = """CREATE TABLE IF NOT EXISTS usage(
   id INTEGER PRIMARY KEY, ts TEXT, source TEXT, model TEXT, status INT, stream INT,
   input INT, output INT, cache_read INT, cache_write INT, reasoning INT, cost_usd REAL,
-  client TEXT, session TEXT, path TEXT, ms INT)"""
+  client TEXT, session TEXT, path TEXT, ms INT, est_usd REAL)"""
 
 
 def init_db():
@@ -42,12 +44,14 @@ def init_db():
     with sqlite3.connect(DB) as c:
         c.execute("PRAGMA journal_mode=WAL")
         c.execute(SCHEMA)
+        if "est_usd" not in [r[1] for r in c.execute("PRAGMA table_info(usage)")]:
+            c.execute("ALTER TABLE usage ADD COLUMN est_usd REAL")  # DBs from before cost estimates
 
 
 def save(row):
     with sqlite3.connect(DB, timeout=10) as c:
         c.execute("INSERT INTO usage(ts,source,model,status,stream,input,output,cache_read,cache_write,"
-                  "reasoning,cost_usd,client,session,path,ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+                  "reasoning,cost_usd,client,session,path,ms,est_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
 
 def parse(ctype, body):
@@ -68,7 +72,8 @@ def parse(ctype, body):
 
 
 def extract(source, objs):
-    """[(model, (input, output, cache_read, cache_write, reasoning, cost) or None)], one entry per billed model."""
+    """[(model, (input, output, cache_read, cache_write, reasoning, cost, est_usd) or None)], one entry per billed model.
+    cost is what the upstream reported; est_usd is a list-price estimate, Anthropic only."""
     u, model = {}, None
     for o in objs:
         msg, resp = (o.get(k) if isinstance(o.get(k), dict) else {} for k in ("message", "response"))  # Ollama's "response" is text
@@ -91,12 +96,16 @@ def extract(source, objs):
             r = by.setdefault(x.get("model") or model, [0, 0, 0, 0])
             for i, k in enumerate(("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")):
                 r[i] += num(x, k)
-        return [(m, (*r, 0, None)) for m, r in by.items()]
+        return [(m, (*r, 0, None, estimate(m, r[0], r[1], r[2], r[3], 0))) for m, r in by.items()]
     pd = u.get("prompt_tokens_details") or u.get("input_tokens_details") or {}
     cd = u.get("completion_tokens_details") or u.get("output_tokens_details") or {}
     reasoning = cd.get("reasoning_tokens") or cd.get("thinking_tokens") or 0
+    est = None
     if source == "anthropic" or "cache_read_input_tokens" in u or "cache_creation_input_tokens" in u:
         inp, cr, cw, out = n("input_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens"), n("output_tokens")
+        cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+        w1 = min(num(cc, "ephemeral_1h_input_tokens"), cw)  # no TTL breakdown means the 5m default
+        est = estimate(model, inp, out, cr, cw - w1, w1)
     else:  # OpenAI-style counts include cached tokens; store them apart
         cr = pd.get("cached_tokens") or u.get("prompt_eval_cached_count") or 0
         cw = pd.get("cache_write_tokens") or 0  # OpenRouter explicit-cache writes, also inside prompt_tokens
@@ -107,7 +116,7 @@ def extract(source, objs):
     cost = u.get("cost")
     if cost is None and u.get("cost_in_usd_ticks") is not None:
         cost = u["cost_in_usd_ticks"] / 1e10  # xAI: 1e10 ticks per USD
-    return [(model, (inp, out, cr, cw, reasoning, cost))]
+    return [(model, (inp, out, cr, cw, reasoning, cost, est))]
 
 
 class H(BaseHTTPRequestHandler):
@@ -249,10 +258,10 @@ class H(BaseHTTPRequestHandler):
         for model, u in rows:
             model = model or req_json.get("model")
             model = re.sub(r"[^\w.:/@+-]", "", model)[:100] if isinstance(model, str) else None  # plugin renders it raw
-            inp, out, cr, cw, rs, cost = u or (0, 0, 0, 0, 0, None)
+            inp, out, cr, cw, rs, cost, est = u or (0, 0, 0, 0, 0, None, None)
             try:
                 save((datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), source, model, status, stream,
-                      inp, out, cr, cw, rs, cost, ua, self.headers.get("x-claude-code-session-id"), path, ms))
+                      inp, out, cr, cw, rs, cost, ua, self.headers.get("x-claude-code-session-id"), path, ms, est))
             except sqlite3.Error as e:
                 sys.stderr.write(f"usage not saved: {e}\n")
         if over:
