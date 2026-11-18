@@ -1,0 +1,23 @@
+# Copy into ~/.omp/agent/models.yml (it does not exist by default) and start hub.py first.
+# Tested with omp 18.22.2. openrouter is override-only: omp keeps its own login and the hub passes it through.
+providers:
+   openrouter:
+      baseUrl: http://127.0.0.1:4000/openrouter/api/v1
+   # discovery: type: ollama cannot work through the hub (omp probes /api/tags at the origin root),
+   # so declare each Ollama model you want logged. Undeclared models may bypass the hub.
+   ollama:
+      baseUrl: http://127.0.0.1:4000/ollama/v1
+      api: openai-responses
+      auth: none
+      models:
+         - id: qwen2.5:7b-instruct
+           name: Qwen2.5 7B (via hub)
+           input: [text]
+           contextWindow: 32768
+           maxTokens: 4096
+         - id: qwen3:8b
+           name: Qwen3 8B (via hub)
+           reasoning: true
+           input: [text]
+           contextWindow: 32768
+           maxTokens: 4096
