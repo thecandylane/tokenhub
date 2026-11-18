@@ -1,5 +1,6 @@
 """Import past usage into the tokenhub DB from local session logs:
-Claude Code (~/.claude/projects/**/*.jsonl), omp (~/.omp/agent/sessions) and Grok Build (~/.grok/sessions/*/usage.json).
+Claude Code (~/.claude/projects/**/*.jsonl), omp and pi (~/.omp|~/.pi/agent/sessions), Codex (~/.codex/sessions)
+and Grok Build (~/.grok/sessions/*/usage.json).
 
 Claude: one row per unique requestId (resumed sessions replay old lines, so raw sums overcount).
 Nothing newer than the first live hub row is imported, so live traffic is never counted twice.
@@ -15,7 +16,8 @@ import hub
 from prices import estimate
 
 LOGS = os.path.expanduser("~/.claude/projects/**/*.jsonl")
-OMP = os.path.expanduser("~/.omp/agent/sessions/**/*.jsonl")
+OMP = [os.path.expanduser(f"~/.{n}/agent/sessions/**/*.jsonl") for n in ("omp", "pi")]  # pi and its omp fork share a format
+CODEX = os.path.expanduser("~/.codex/sessions/**/rollout-*.jsonl")
 GROK = os.path.expanduser("~/.grok/sessions/*/*/usage.json")
 
 
@@ -48,7 +50,7 @@ def ts_of(s):
 
 def omp_rows():
     """(key, ts, source, model, session, in, out, cache_read, cache_write, reasoning, cost)"""
-    for f in glob.glob(OMP, recursive=True):
+    for f in [x for pat in OMP for x in glob.glob(pat, recursive=True)]:
         for line in open(f, errors="replace"):
             if '"usage"' not in line:
                 continue
@@ -63,6 +65,41 @@ def omp_rows():
                 yield (f"omp/{d['id']}", ts_of(d["timestamp"]), m.get("provider") or "omp", m.get("model"), os.path.basename(f),
                        u.get("input") or 0, u.get("output") or 0, u.get("cacheRead") or 0, u.get("cacheWrite") or 0,
                        u.get("reasoningTokens") or 0, cost)
+
+
+def codex_rows():
+    """Per-request deltas from Codex's cumulative token_count events; replayed (forked) events are skipped by (ts, totals)."""
+    seen = set()
+    for f in sorted(glob.glob(CODEX, recursive=True)):
+        model, session, prev = None, None, {}
+        for line in open(f, errors="replace"):
+            if '"token_count"' not in line and '"session_meta"' not in line and '"turn_context"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            p = d.get("payload") if isinstance(d.get("payload"), dict) else {}
+            if d.get("type") == "session_meta":
+                session = p.get("id")
+            elif d.get("type") == "turn_context":
+                model = p.get("model") or model
+            elif d.get("type") == "event_msg" and p.get("type") == "token_count":
+                tot = (p.get("info") or {}).get("total_token_usage")
+                if not isinstance(tot, dict) or not d.get("timestamp"):
+                    continue
+                keys = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens")
+                delta = {x: (tot.get(x) or 0) - (prev.get(x) or 0) for x in keys}
+                if any(v < 0 for v in delta.values()):  # counter reset after a compaction
+                    delta = {x: tot.get(x) or 0 for x in keys}
+                prev = tot
+                ident = (d["timestamp"], tot.get("total_tokens"), tot.get("input_tokens"))
+                if ident in seen or not any(delta.values()):
+                    continue
+                seen.add(ident)
+                cr, cw = delta["cached_input_tokens"], delta["cache_write_input_tokens"]  # OpenAI-style input includes cached reads
+                yield (f"codex/{session}/{d.get('ordinal') or d['timestamp']}", ts_of(d["timestamp"]), "chatgpt", model, session,
+                       max(delta["input_tokens"] - cr - cw, 0), delta["output_tokens"], cr, cw, delta["reasoning_output_tokens"], None)
 
 
 def grok_rows():
@@ -101,7 +138,7 @@ def main():
             rows.append((ts_of(ts), "anthropic", model, 200, 1, num("input_tokens"), num("output_tokens"),
                          num("cache_read_input_tokens"), num("cache_creation_input_tokens"),
                          cd.get("thinking_tokens") or 0, None, "backfill", sess, f"/backfill/{k}", 0, est))
-        for k, ts, src, model, sess, i, o, cr, cw, rs, cost in [*omp_rows(), *grok_rows()]:
+        for k, ts, src, model, sess, i, o, cr, cw, rs, cost in [*omp_rows(), *codex_rows(), *grok_rows()]:
             if f"/backfill/{k}" not in have and ts < live:
                 rows.append((ts, src, model, 200, 1, i, o, cr, cw, rs, cost, "backfill", sess, f"/backfill/{k}", 0, None))
         by = {}

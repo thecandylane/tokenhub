@@ -216,6 +216,29 @@ def main():
     assert ex("anthropic", {"model": "A", "usage": {"input_tokens": 0, "output_tokens": 0, "iterations": [
         {"type": "compaction", "input_tokens": 144, "output_tokens": 276}]}}) == [("A", (144, 276, 0, 0, 0, None, None))]
 
+    # Gemini: JSON-array stream, cached split out, thoughts billed as output, model from modelVersion
+    gem = hub.parse("application/json", json.dumps([
+        {"candidates": [], "modelVersion": "gemini-x"},
+        {"usageMetadata": {"promptTokenCount": 100, "cachedContentTokenCount": 40, "candidatesTokenCount": 7,
+                           "thoughtsTokenCount": 3, "toolUsePromptTokenCount": 5, "totalTokenCount": 115}, "modelVersion": "gemini-x"}]).encode())
+    assert hub.extract("gemini", gem) == [("gemini-x", (65, 10, 40, 0, 3, None, None))], hub.extract("gemini", gem)
+
+    # SSE without a Content-Type header (ChatGPT's Codex endpoint)
+    sse_body = b'event: response.completed\ndata: {"type":"response.completed","response":{"model":"m","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":30},"output_tokens":9,"output_tokens_details":{"reasoning_tokens":4}}}}\n\n'
+    assert hub.extract("chatgpt", hub.parse("", sse_body)) == [("m", (70, 9, 30, 0, 4, None, None))]
+
+    # websocket upgrades are refused fast so clients fall back to HTTP; routes.json adds a route
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sk:
+        sk.sendall(b"GET /chatgpt/responses HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n" % port)
+        assert sk.recv(100).startswith(b"HTTP/1.0 426")
+    with open(os.path.join(os.path.dirname(hub.DB), "routes.json"), "w") as f:
+        json.dump({"custom": "http://127.0.0.1:9/v1/", "bad name": "http://x", "evil": "file:///etc"}, f)
+    keep = dict(hub.ROUTES)
+    hub.load_routes()
+    assert hub.ROUTES["custom"] == ("http", "127.0.0.1", 9, "/v1") and "bad name" not in hub.ROUTES and "evil" not in hub.ROUTES
+    hub.ROUTES.clear()
+    hub.ROUTES.update(keep)
+
     # list-price estimate: 1M of each token kind, half the writes on the 1h TTL (Opus 5.5: 4 + 6.5 + 0.2 + 20)
     (_, u), = ex("anthropic", {"model": "claude-opus-5-5-20260101", "usage": {
         "input_tokens": 1_000_000, "output_tokens": 1_000_000, "cache_read_input_tokens": 1_000_000,

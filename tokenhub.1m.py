@@ -10,7 +10,12 @@ import stats
 from stats import k, money, pretty, dur
 
 MONO = "| font=Menlo"
-NAMES = {"anthropic": "Anthropic", "grok": "Grok", "openrouter": "OpenRouter", "ollama": "Ollama", "xai": "xAI"}
+
+
+def c(x):
+    return money(x) if x else "no cost data"
+NAMES = {"anthropic": "Anthropic", "grok": "Grok", "openrouter": "OpenRouter", "ollama": "Ollama", "xai": "xAI",
+         "chatgpt": "Codex (ChatGPT)", "openai": "OpenAI", "gemini": "Gemini"}
 
 
 def sources(r):
@@ -31,10 +36,10 @@ def period_menu(r, title):
            "-----",
            "--By source"]
     for name, t, cost in sources(r):
-        out.append(f"----{name}: {k(t)} · {money(cost)} {MONO}")
+        out.append(f"----{name}: {k(t)} · {c(cost)} {MONO}")
     out += ["--Models"]
     for m in r["models"][:12]:
-        out.append(f"----{pretty(m['model'])} {m['share']:.1%} · {money(m['cost'])} {MONO}")
+        out.append(f"----{pretty(m['model'])} {m['share']:.1%} · {c(m['cost'])} {MONO}")
         out.append(f"------In {k(m['input'])} · Out {k(m['output'])} · Cache {k(m['cache_read'])} read / {k(m['cache_write'])} write {MONO}")
     if len(r["models"]) > 12:
         out.append(f"----+{len(r['models']) - 12} more (run stats.py) {MONO}")
@@ -65,7 +70,7 @@ def main():
     print(f"Today: {k(today)} tokens · 30 days {stats.spark(allr['daily'], allr['today'])} {MONO}")
     print("---")
     for name, t, cost in sources(allr):
-        print(f"{name}: {k(t)} · {money(cost)} {MONO}")
+        print(f"{name}: {k(t)} · {c(cost)} {MONO}")
     print("---")
     for r, title in ((allr, "All time"), (stats.compute(period="30d"), "Last 30 days"), (stats.compute(period="7d"), "Last 7 days")):
         print("\n".join(period_menu(r, title)))

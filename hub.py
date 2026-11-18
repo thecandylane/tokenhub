@@ -1,6 +1,6 @@
 """tokenhub: local passthrough proxy that logs LLM token usage to SQLite.
 
-/anthropic, /openrouter, /xai, /grok and /ollama forward to their upstream. Headers and bodies pass
+/anthropic, /openrouter, /xai, /grok, /ollama, /openai, /chatgpt and /gemini (plus routes.json) forward to their upstream. Headers and bodies pass
 through untouched, so the hub never holds or stores a credential."""
 import http.client
 import json
@@ -14,6 +14,7 @@ import time
 import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from prices import estimate
 
@@ -25,6 +26,9 @@ ROUTES = {
     "xai": ("https", "api.x.ai", 443, ""),
     "grok": ("https", "cli-chat-proxy.grok.com", 443, ""),  # Grok Build subscription login; host read from the grok binary
     "ollama": ("http", "127.0.0.1", 11434, ""),
+    "openai": ("https", "api.openai.com", 443, ""),  # clients use /openai/v1
+    "chatgpt": ("https", "chatgpt.com", 443, "/backend-api/codex"),  # Codex with a ChatGPT login
+    "gemini": ("https", "generativelanguage.googleapis.com", 443, ""),
 }
 HOP = {"connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization",
        "te", "trailer", "transfer-encoding", "upgrade"}
@@ -32,6 +36,18 @@ SKIP_REQ = HOP | {"host", "content-length", "accept-encoding"}
 MAX_CAPTURE = 16 << 20  # ponytail: usage lost if a response exceeds this; raise or tail-capture
 MAX_BODY = 128 << 20  # request bodies; raise if you proxy large file uploads
 TIMEOUT = 600  # long thinking pauses mean long silences between chunks
+
+def load_routes():
+    """Extra or replacement routes from routes.json beside the DB: {"name": "https://host[:port][/base]"}."""
+    try:
+        extra = json.load(open(os.path.join(os.path.dirname(os.path.abspath(DB)), "routes.json")))
+    except (OSError, ValueError):
+        return
+    for name, url in extra.items():
+        u = urlsplit(url) if isinstance(url, str) else None
+        if u and u.scheme in ("http", "https") and u.hostname and re.fullmatch(r"[a-z0-9-]+", name):
+            ROUTES[name] = (u.scheme, u.hostname, u.port or (443 if u.scheme == "https" else 80), u.path.rstrip("/"))
+
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS usage(
   id INTEGER PRIMARY KEY, ts TEXT, source TEXT, model TEXT, status INT, stream INT,
@@ -54,14 +70,20 @@ def save(row):
                   "reasoning,cost_usd,client,session,path,ms,est_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
 
+def is_sse(ctype, body):
+    """Event stream by header, or by content when a backend (ChatGPT's Codex endpoint) sends none."""
+    return "event-stream" in ctype or body.lstrip()[:6] in (b"event:", b"data: ", b"data:{")
+
+
 def parse(ctype, body):
     """JSON objects found in a JSON, SSE or NDJSON body."""
     text = body.decode("utf-8", "replace")
-    chunks = [l[5:].strip() for l in text.splitlines() if l.startswith("data:")] if "event-stream" in ctype else [text]
+    chunks = [l[5:].strip() for l in text.splitlines() if l.startswith("data:")] if is_sse(ctype, body) else [text]
     objs = []
     for s in chunks:
         try:
-            objs.append(json.loads(s))
+            v = json.loads(s)
+            objs.extend(v if isinstance(v, list) else [v])  # Gemini streams a JSON array
         except ValueError:
             for line in s.splitlines():
                 try:
@@ -77,10 +99,17 @@ def extract(source, objs):
     u, model = {}, None
     for o in objs:
         msg, resp = (o.get(k) if isinstance(o.get(k), dict) else {} for k in ("message", "response"))  # Ollama's "response" is text
-        model = o.get("model") or msg.get("model") or resp.get("model") or model
+        model = o.get("model") or o.get("modelVersion") or msg.get("model") or resp.get("model") or model
         for x in (o.get("usage"), msg.get("usage"), resp.get("usage")):
             if isinstance(x, dict):
                 u.update({k: v for k, v in x.items() if v is not None})
+        g = o.get("usageMetadata")
+        if isinstance(g, dict):  # Gemini: prompt includes cached tokens; thoughts are billed as output
+            th = g.get("thoughtsTokenCount") or 0
+            u.update(prompt_tokens=(g.get("promptTokenCount") or 0) + (g.get("toolUsePromptTokenCount") or 0),
+                     completion_tokens=(g.get("candidatesTokenCount") or 0) + th,
+                     prompt_tokens_details={"cached_tokens": g.get("cachedContentTokenCount") or 0},
+                     completion_tokens_details={"reasoning_tokens": th})
         if "eval_count" in o or "prompt_eval_count" in o:  # Ollama native
             u.update(prompt_tokens=o.get("prompt_eval_count", 0), completion_tokens=o.get("eval_count", 0),
                      prompt_eval_cached_count=o.get("prompt_eval_cached_count") or 0)
@@ -165,6 +194,8 @@ class H(BaseHTTPRequestHandler):
             return self._reply(403, "bad Host")  # blocks DNS rebinding from web pages
         if self.headers.get("Origin") or self.headers.get("Sec-Fetch-Site", "none") not in ("none", "same-origin"):
             return self._reply(403, "browser request")  # blocks cross-origin web pages; CLIs and SDKs send neither
+        if "websocket" in self.headers.get("Upgrade", "").lower():
+            return self._reply(426, "tokenhub proxies HTTP only; the client should fall back to HTTP streaming")
         if self.path == "/_health":
             return self._reply(200, "ok")
         _, prefix, rest = (self.path.split("/", 2) + ["", ""])[:3]
@@ -241,6 +272,8 @@ class H(BaseHTTPRequestHandler):
             self._record(prefix, req_json, status, ctype, bytes(cap), enc, over, rest, int((time.monotonic() - t0) * 1000))
 
     def _record(self, source, req_json, status, ctype, cap, enc, over, rest, ms):
+        if os.environ.get("TOKENHUB_DEBUG"):
+            sys.stderr.write(f"record {source} {rest} status={status} ctype={ctype!r} enc={enc!r} bytes={len(cap)}\n")
         try:
             if enc == "gzip":
                 d = zlib.decompressobj(16 + zlib.MAX_WBITS)
@@ -250,13 +283,13 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             sys.stderr.write(f"usage parse failed ({source}): {type(e).__name__}: {e}\n")
             rows = [(None, None)]
-        stream = int("stream" in ctype or "ndjson" in ctype or bool(req_json.get("stream")))
+        stream = int(is_sse(ctype, cap) or "ndjson" in ctype or bool(req_json.get("stream")))
         path = "/" + rest.split("?")[0]
         if rows[0][1] is None and status < 400 and not (stream and ("completions" in path or "responses" in path)):
             return  # no usage (count_tokens, embeddings, pulls); a streamed chat without include_usage still gets a row
         ua = (self.headers.get("User-Agent") or "").split(" ")[0][:60]
         for model, u in rows:
-            model = model or req_json.get("model")
+            model = model or req_json.get("model") or (re.search(r"/models/([^/:?]+)", path) or [None, None])[1]
             model = re.sub(r"[^\w.:/@+-]", "", model)[:100] if isinstance(model, str) else None  # plugin renders it raw
             inp, out, cr, cw, rs, cost, est = u or (0, 0, 0, 0, 0, None, None)
             try:
@@ -279,6 +312,7 @@ class Srv(ThreadingHTTPServer):
 
 
 def serve(port):
+    load_routes()
     init_db()
     return Srv(("127.0.0.1", port), H)
 

@@ -15,6 +15,11 @@ Local proxy on `127.0.0.1:4000` that logs token usage to `~/.tokenhub/usage.db` 
 | `/xai` | api.x.ai (untested, no API key) |
 | `/grok` | cli-chat-proxy.grok.com (Grok Build subscription login) |
 | `/ollama` | 127.0.0.1:11434 |
+| `/openai` | api.openai.com (clients use `/openai/v1`) |
+| `/chatgpt` | chatgpt.com/backend-api/codex (Codex with a ChatGPT login) |
+| `/gemini` | generativelanguage.googleapis.com |
+
+Add or replace routes for any other endpoint in `~/.tokenhub/routes.json`: `{"deepseek": "https://api.deepseek.com/v1"}` makes `/deepseek` forward there. Names are lowercase letters, digits and dashes.
 
 Grok Build is routed with `GROK_MODELS_BASE_URL`; it reports a cost per request. Grok limits and reset times (not per-request tokens) still come from CodexBar.
 
@@ -25,9 +30,26 @@ Grok Build is routed with `GROK_MODELS_BASE_URL`; it reports a cost per request.
 
 Start at login: copy `launchd.plist.example` to `~/Library/LaunchAgents/dev.tokenhub.plist`, replace the two placeholder paths, then `launchctl load` it.
 
+## Supported tools
+
+| Tool | Live logging | History import |
+|---|---|---|
+| Claude Code | `claude` wrapper sets `ANTHROPIC_BASE_URL` (`/anthropic`) | yes |
+| Codex CLI | `codex` wrapper uses a custom provider on `/chatgpt` with WebSockets off (tested with a ChatGPT login) | yes |
+| Grok Build | `grok` wrapper sets `GROK_MODELS_BASE_URL` (`/grok/v1`) | yes |
+| omp | `omp-models.yml.example` | yes |
+| pi | `~/.pi/agent/models.json`: set `providers.<name>.baseUrl` (per the pi docs; untested here) | yes, same format as omp (untested) |
+| Gemini CLI | `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:4000/gemini` with an API key (per the Gemini CLI docs; untested) | no |
+| OpenCode | provider `settings.baseURL` (per the OpenCode docs; untested) | no |
+| Aider | `OPENAI_API_BASE=http://127.0.0.1:4000/openai/v1` (per the Aider docs; untested) | no |
+| Zed | `language_models.<provider>.api_url` in settings (per the Zed docs; untested) | no |
+| Cursor | not possible: Cursor sends requests through its own servers, so a local proxy never sees them | no |
+
+Anything OpenAI-compatible can use a `routes.json` entry. The hub reads OpenAI chat and responses, Anthropic, Gemini and Ollama usage formats.
+
 ## Point clients at it
 
-Claude Code and Grok Build: `tokenhub.zsh` (sourced from `~/.zshrc`) defines `claude` and `grok` functions that use the hub when `/_health` answers and run untouched when it does not. By hand:
+Claude Code, Codex and Grok Build: `tokenhub.zsh` (sourced from `~/.zshrc`) defines `claude`, `codex` and `grok` functions that use the hub when `/_health` answers and run untouched when it does not. By hand:
 
     ANTHROPIC_BASE_URL=http://127.0.0.1:4000/anthropic claude
     GROK_MODELS_BASE_URL=http://127.0.0.1:4000/grok/v1 grok
@@ -58,7 +80,7 @@ The title shows today's input+output tokens; the menu lists per-source and per-m
 
 ## History import
 
-`python3 backfill.py` (add `--dry-run` to preview) imports past usage from local Claude Code, omp and Grok Build logs. The menu bar plugin shows Claude Code's own all-time figure from `~/.claude/stats-cache.json` next to the unique-request count.
+`python3 backfill.py` (add `--dry-run` to preview) imports past usage from local Claude Code, Codex, omp/pi and Grok Build logs. Codex reports no cost, so its cost shows as "no cost data". The menu bar plugin shows Claude Code's own all-time figure from `~/.claude/stats-cache.json` next to the unique-request count.
 
 ## Stats
 
