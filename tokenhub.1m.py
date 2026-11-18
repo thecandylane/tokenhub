@@ -9,9 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # the plugin is
 import stats
 from stats import k, money, pretty, dur
 
-# SwiftBar greys out any line with no action and no color param, so every line carries a color
+# SwiftBar greys out any line with no action and no color param. Data lines stay grey (MONO); lines that open a submenu get a color (PLAIN, MENU) so they read as clickable.
 INK = "color=#1d1d1f,#f5f5f7"
-MONO = f"| font=Menlo {INK}"
+MONO = "| font=Menlo"
+MENU = f"| font=Menlo {INK}"
 PLAIN = f"| {INK}"
 
 
@@ -42,7 +43,7 @@ def period_menu(r, title):
         out.append(f"----{name}: {k(t)} · {c(cost)} {MONO}")
     out += [f"--Models {PLAIN}"]
     for m in r["models"][:12]:
-        out.append(f"----{pretty(m['model'])} {m['share']:.1%} · {c(m['cost'])} {MONO}")
+        out.append(f"----{pretty(m['model'])} {m['share']:.1%} · {c(m['cost'])} {MENU}")
         out.append(f"------In {k(m['input'])} · Out {k(m['output'])} · Cache {k(m['cache_read'])} read / {k(m['cache_write'])} write {MONO}")
     if len(r["models"]) > 12:
         out.append(f"----+{len(r['models']) - 12} more (run stats.py) {MONO}")
