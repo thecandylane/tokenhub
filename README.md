@@ -1,7 +1,7 @@
 
 <img width="1201" height="472" alt="Screenshot 2026-11-18 at 3 27 46 PM" src="https://github.com/user-attachments/assets/c64c9831-e6df-422c-bcd2-eefa5e8c91a2" />
 
--Since August 2026
+-Since August 2026 Macbook Pro M1 Max
 
 
 # tokenhub
