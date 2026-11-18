@@ -1,3 +1,9 @@
+
+<img width="501" height="409" alt="Screenshot 2026-11-18 at 3 25 51 PM" src="https://github.com/user-attachments/assets/8334f09d-de76-485f-b505-de497ed3754c" />
+
+
+
+
 # tokenhub
 
 Local proxy on `127.0.0.1:4000` that logs token usage to `~/.tokenhub/usage.db` (SQLite). Headers and bodies pass through untouched, so it holds no keys: your Claude subscription login, OpenRouter key and so on still go straight upstream.
