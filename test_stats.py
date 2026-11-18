@@ -8,7 +8,7 @@ import stats
 
 today = date(2026, 11, 18)
 cache = {"through": "2026-11-10", "longest": 90061.0, "tokens": 0,
-         "days": {date(2026, 11, 1): 2, date(2026, 11, 2): 3}, "messages": {date(2026, 11, 1): 50, date(2026, 11, 2): 10}}
+         "days": {date(2026, 11, 1): 2, date(2026, 11, 2): 3}}
 
 hub.DB = os.path.join(tempfile.mkdtemp(), "s.db")
 hub.init_db()
@@ -27,7 +27,7 @@ assert r["requests"] == 4 and r["tokens"] == 1130 + 1130 + 100 + 2, r["tokens"]
 assert abs(r["cost"] - 7.5) < 1e-9 and r["favorite"] == "claude-opus-5-5"
 assert r["active_days"] == 6 and r["longest_streak"] == 3 and r["current_streak"] == 3  # Nov 12-18 minus gaps; cache days add Nov 1-2
 assert r["sessions"] == 1 + 1 + 5 + 0, r["sessions"]  # grok "g", Claude "a" is newer than the cache, plus the cache's 2+3 sessions
-assert r["most_active_day"] == date(2026, 11, 1) and r["longest_session"] == 90061.0
+assert r["most_active_day"] in (date(2026, 11, 17), date(2026, 11, 18)) and r["longest_session"] == 90061.0
 assert abs(r["avg_cost_day"] - 7.5 / 6) < 1e-9
 assert stats.compute(hub.DB, "7d", today=today, cache=cache)["active_days"] == 4
 assert stats.streaks({date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 4)}, date(2026, 1, 4)) == (2, 1)

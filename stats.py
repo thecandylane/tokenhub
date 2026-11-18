@@ -1,4 +1,4 @@
-"""Usage stats like Claude Code's /stats tab, over every source in the tokenhub DB.
+"""Usage stats over every source in the tokenhub DB: activity, streaks, sessions, models, tokens and cost.
 
 CLI: python3 stats.py [all|7d|30d]    Library: compute(db, period) -> dict, used by the menu bar plugin."""
 import json
@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 
 DB = os.environ.get("TOKENHUB_DB", os.path.expanduser("~/.tokenhub/usage.db"))
 TOK = "(input+output+cache_read+cache_write)"
-LEVELS = [(90, 66, 60), (139, 94, 80), (176, 113, 92), (204, 125, 95)]  # light to heavy, Claude's orange ramp
+LEVELS = [(90, 66, 60), (139, 94, 80), (176, 113, 92), (204, 125, 95)]  # light to heavy
 
 
 def k(n):
@@ -52,12 +52,11 @@ def streaks(days, today):
 
 
 def claude_cache(path=None):
-    """Claude Code's own stats cache (sessions, active days, longest session through lastComputedDate), or None."""
+    """Claude Code's stats cache: its session history is not recoverable from the DB, so sessions and active days come from here."""
     try:
         d = json.load(open(path or os.path.expanduser("~/.claude/stats-cache.json")))
         return {"through": d["lastComputedDate"], "longest": d["longestSession"]["duration"] / 1000,
                 "days": {date.fromisoformat(x["date"]): x.get("sessionCount", 0) for x in d["dailyActivity"]},
-                "messages": {date.fromisoformat(x["date"]): x.get("messageCount", 0) for x in d["dailyActivity"]},
                 "tokens": sum(u.get(x, 0) for u in d["modelUsage"].values() for x in (
                     "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))}
     except (OSError, ValueError, KeyError):
@@ -83,7 +82,7 @@ def compute(db=None, period="all", today=None, cache=None):
     r["cost"] = r["cost_reported"] + r["cost_est"]
     daily = {date.fromisoformat(d): t for d, t in q(f"SELECT date(ts,'localtime'), SUM{TOK} FROM usage WHERE {where} GROUP BY 1")}
     r["daily"] = daily
-    cc = claude_cache() if cache is None else cache  # Claude Code's cache knows its sessions; replayed log lines hide them from the DB
+    cc = claude_cache() if cache is None else cache
     lo = date.fromisoformat(since)
     cc_days = {d: n for d, n in (cc or {}).get("days", {}).items() if d >= lo}
     active = set(daily) | set(cc_days)
@@ -91,10 +90,8 @@ def compute(db=None, period="all", today=None, cache=None):
     first = min(active) if active else today
     r["span_days"] = (today - (first if period == "all" else lo)).days + 1
     r["longest_streak"], r["current_streak"] = streaks(active, today)
-    msgs = {d: n for d, n in (cc or {}).get("messages", {}).items() if d >= lo}  # Claude ranks its busiest day by messages
-    busiest = msgs or daily
-    r["most_active_day"] = max(busiest, key=busiest.get) if busiest else None
-    # DB sessions: every non-Claude source, plus Claude rows newer than the cache
+    r["most_active_day"] = max(daily, key=daily.get) if daily else None
+    # DB sessions: every source except Anthropic, plus Anthropic rows newer than the cache
     sess = c.execute(f"SELECT session, MIN(ts), MAX(ts) FROM usage WHERE {where} AND session IS NOT NULL AND session!='' "
                      f"AND (source!='anthropic' OR date(ts,'localtime')>?) GROUP BY session",
                      (since, cc["through"] if cc else "0000-01-01")).fetchall()
@@ -110,7 +107,7 @@ def compute(db=None, period="all", today=None, cache=None):
     r["favorite"] = r["models"][0]["model"] if r["models"] else None
     r["by_source"] = {s: (t, cost) for s, t, cost in q(
         f"SELECT source, SUM{TOK}, COALESCE(SUM(cost_usd),0)+COALESCE(SUM(est_usd),0) FROM usage WHERE {where} GROUP BY source ORDER BY 2 DESC")}
-    # Claude Code's own all-time total (it counts replayed history twice) swapped in for the DB's unique-request Claude tokens
+    # Claude Code's own all-time token total counts replayed history twice; tokens_cc swaps it in for the DB's unique-request figure
     r["tokens_cc"] = None
     if cc and period == "all":
         mine = r["by_source"].get("anthropic", (0, 0))[0]
@@ -159,19 +156,20 @@ def lines(r, weeks=53, color=True):
     out = [*[("Mon", "", "Wed", "", "Fri", "", "")[i].ljust(4) + row for i, row in enumerate(heatmap(r["daily"], r["today"], weeks, color))], ""]
     fav = pretty(r["favorite"])
     mad = r["most_active_day"]
-    out += [f"Period: {r['period']}   Favorite model: {fav}   Total tokens: {k(r['tokens_cc'] or r['tokens'])}"
-            + (f" (Claude Code's own count; {k(r['tokens'])} unique requests)" if r["tokens_cc"] else ""),
+    out += [f"Period: {r['period']}   Favorite model: {fav}   Total tokens: {k(r['tokens_cc'] or r['tokens'])}",
             f"Sessions: {r['sessions']:,}   Longest session: {dur(r['longest_session'])}",
             f"Active days: {r['active_days']}/{r['span_days']}   Longest streak: {r['longest_streak']} days",
             f"Most active day: {mad:%b} {mad.day}   Current streak: {r['current_streak']} days",
             f"Input {k(r['input'])} · Output {k(r['output'])} · Cache read {k(r['cache_read'])} · Cache write {k(r['cache_write'])}",
             "",
-            f"Cost {money(r['cost'])}  (reported {money(r['cost_reported'])} + Claude list-price estimate {money(r['cost_est'])})",
+            f"Cost {money(r['cost'])}  (provider-reported {money(r['cost_reported'])} + list-price estimate {money(r['cost_est'])})",
             f"Avg {money(r['avg_cost_day'])}/active day · {money(r['avg_cost_session'])}/session · {money(r['avg_cost_request'])}/request",
             "", "Last 30 days  " + spark(r["daily"], r["today"]), "", "Models"]
     for m in r["models"]:
         out += [f"  {pretty(m['model'])} ({m['share']:.1%})  {money(m['cost'])}",
                 f"    In: {k(m['input'])} · Out: {k(m['output'])} · Cache: {k(m['cache_read'])} read · {k(m['cache_write'])} write"]
+    if r["tokens_cc"]:
+        out += ["", f"Note: total includes Claude Code's replayed-history count; {k(r['tokens'])} tokens are unique requests."]
     return out
 
 
