@@ -20,6 +20,13 @@ def sse(*events):
 
 
 class Fake(BaseHTTPRequestHandler):
+    def do_GET(self):
+        seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}, b""))
+        if self.server.name == "grok" and self.path == "/v1/models":
+            return self._send(200, "application/json",
+                              b'{"object":"list","data":[{"id":"grok-4.7"}]}')
+        self._send(404, "text/plain", b"no")
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
@@ -99,7 +106,7 @@ def rows():
 
 def main():
     hub.DB = os.path.join(tempfile.mkdtemp(), "t.db")
-    fakes = {n: fake(n) for n in ("anthropic", "openrouter", "xai", "ollama")}
+    fakes = {n: fake(n) for n in ("anthropic", "openrouter", "xai", "ollama", "grok")}
     hub.ROUTES = {n: ("http", "127.0.0.1", s.server_address[1], "") for n, s in fakes.items()}
     hub_srv = start(hub.serve(0))
     port = hub_srv.server_address[1]
@@ -161,6 +168,20 @@ def main():
     c = http.client.HTTPConnection("127.0.0.1", port)
     c.request("GET", "/_health")
     assert c.getresponse().read() == b"ok"
+
+    # grok catalog: GET /grok/v1/models keeps the session token (not an API key)
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.putrequest("GET", "/grok/v1/models", skip_host=True)
+    c.putheader("Host", f"127.0.0.1:{port}")
+    c.putheader("Authorization", "Bearer sess-token")
+    c.putheader("X-XAI-Token-Auth", "xai-grok-cli")
+    c.endheaders()
+    r = c.getresponse()
+    body = json.loads(r.read())
+    assert r.status == 200 and body["data"][0]["id"] == "grok-4.7", body
+    path, h, _ = seen[-1]
+    assert path == "/v1/models", path
+    assert h["authorization"] == "Bearer sess-token" and h["x-xai-token-auth"] == "xai-grok-cli"
 
     # browsers, bad framing, odd bodies, hostile model names
     c, r = call(port, "/ollama/api/chat", headers={"Origin": "https://evil.example"})

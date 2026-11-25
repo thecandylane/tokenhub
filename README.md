@@ -21,7 +21,7 @@ Local proxy on `127.0.0.1:4000` that logs token usage to `~/.tokenhub/usage.db` 
 
 Add or replace routes for any other endpoint in `~/.tokenhub/routes.json`: `{"deepseek": "https://api.deepseek.com/v1"}` makes `/deepseek` forward there. Names are lowercase letters, digits and dashes.
 
-Grok Build is routed with `GROK_MODELS_BASE_URL`; it reports a cost per request. Grok limits and reset times (not per-request tokens) still come from CodexBar.
+Grok Build is routed with `GROK_CLI_CHAT_PROXY_BASE_URL` (`/grok/v1`), the session-service proxy, so catalog fetch and inference both use the grok.com login. It reports a cost per request. Grok limits and reset times (not per-request tokens) still come from CodexBar.
 
 ## Run
 
@@ -36,7 +36,7 @@ Start at login: copy `launchd.plist.example` to `~/Library/LaunchAgents/dev.toke
 |---|---|---|
 | Claude Code | `claude` wrapper sets `ANTHROPIC_BASE_URL` (`/anthropic`) | yes |
 | Codex CLI | `codex` wrapper uses a custom provider on `/chatgpt` with WebSockets off (tested with a ChatGPT login) | yes |
-| Grok Build | `grok` wrapper sets `GROK_MODELS_BASE_URL` (`/grok/v1`) | yes |
+| Grok Build | `grok` wrapper sets `GROK_CLI_CHAT_PROXY_BASE_URL` (`/grok/v1`) | yes |
 | omp | `omp-models.yml.example` | yes |
 | pi | `~/.pi/agent/models.json`: set `providers.<name>.baseUrl` (per the pi docs; untested here) | yes, same format as omp (untested) |
 | Gemini CLI | `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:4000/gemini` with an API key (per the Gemini CLI docs; untested) | no |
@@ -52,7 +52,7 @@ Anything OpenAI-compatible can use a `routes.json` entry. The hub reads OpenAI c
 Claude Code, Codex and Grok Build: `tokenhub.zsh` (sourced from `~/.zshrc`) defines `claude`, `codex` and `grok` functions that use the hub when `/_health` answers and run untouched when it does not. By hand:
 
     ANTHROPIC_BASE_URL=http://127.0.0.1:4000/anthropic claude
-    GROK_MODELS_BASE_URL=http://127.0.0.1:4000/grok/v1 grok
+    GROK_CLI_CHAT_PROXY_BASE_URL=http://127.0.0.1:4000/grok/v1 grok
 
 Editor or desktop launches do not read `~/.zshrc`, so they bypass the hub.
 

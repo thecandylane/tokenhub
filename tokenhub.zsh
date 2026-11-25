@@ -8,8 +8,14 @@ claude() {
   else command claude "$@"; fi
 }
 
+# Session-service proxy, so catalog fetch and inference both use grok login.
+# GROK_MODELS_BASE_URL would force XAI_API_KEY catalog auth and empty the picker.
 grok() {
-  if _tokenhub_up; then GROK_MODELS_BASE_URL="$(_tokenhub_url)/grok/v1" command grok "$@"
+  if _tokenhub_up; then
+    env -u GROK_MODELS_BASE_URL -u GROK_MODELS_LIST_URL \
+      GROK_CLI_CHAT_PROXY_BASE_URL="$(_tokenhub_url)/grok/v1" \
+      GROK_PRODUCTION_CLI_CHAT_PROXY_BASE_URL="$(_tokenhub_url)/grok/v1" \
+      command grok "$@"
   else command grok "$@"; fi
 }
 
